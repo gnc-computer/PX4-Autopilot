@@ -169,7 +169,7 @@ bool ManualControl::wantsArm(const vehicle_control_mode_s &vehicle_control_mode,
 	if (!armed
 	    && (stick_in_lower_right || arm_button_pressed || arm_switch_to_arm_transition)) {
 
-		const bool last_arm_hysteresis = _stick_disarm_hysteresis.get_state();
+		const bool last_arm_hysteresis = _stick_arm_hysteresis.get_state();
 		_stick_arm_hysteresis.set_state_and_update(true, hrt_absolute_time());
 		const bool arm_trigger = !last_arm_hysteresis && _stick_arm_hysteresis.get_state()
 					 && !_stick_disarm_hysteresis.get_state();
