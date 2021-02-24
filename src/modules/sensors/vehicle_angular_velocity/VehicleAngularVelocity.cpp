@@ -204,6 +204,7 @@ bool VehicleAngularVelocity::SensorSelectionUpdate(bool force)
 						_reset_filters = true;
 						_bias.zero();
 						_fifo_available = true;
+						_dynamic_notch_available = false;
 
 						return true;
 					}
@@ -227,6 +228,7 @@ bool VehicleAngularVelocity::SensorSelectionUpdate(bool force)
 						_reset_filters = true;
 						_bias.zero();
 						_fifo_available = false;
+						_dynamic_notch_available = false;
 
 						return true;
 					}
@@ -294,6 +296,55 @@ void VehicleAngularVelocity::Run()
 	ParametersUpdate();
 
 	if (_fifo_available) {
+
+		// dynamic notch filter update
+		if (_filter_sample_rate_hz > 0.f) {
+			sensor_gyro_fft_s sensor_gyro_fft;
+
+			if (_sensor_gyro_fft_sub.update(&sensor_gyro_fft)) {
+				if (sensor_gyro_fft.device_id == _selected_sensor_device_id) {
+					float *peak_frequencies[] { sensor_gyro_fft.peak_frequencies_x, sensor_gyro_fft.peak_frequencies_y, sensor_gyro_fft.peak_frequencies_z};
+
+					for (int i = 0; i < MAX_NUM_FFT_PEAKS; i++) {
+						for (int axis = 0; axis < 3; axis++) {
+							auto &dnf = _dynamic_notch_filter[i][axis];
+							const float &peak_freq = peak_frequencies[axis][i];
+
+							if (PX4_ISFINITE(peak_freq) && (peak_freq > 1.f)) {
+								const float change_percent = fabsf(dnf.getNotchFreq() - peak_freq) / peak_freq;
+
+								if (change_percent > 0.001f) {
+									// peak frequency changed by at least 0.1%
+									dnf.setParameters(_filter_sample_rate_hz, peak_freq, sensor_gyro_fft.resolution_hz);
+
+									// only reset if there's sufficient change (> 1%)
+									if ((change_percent > 0.01f) && (_fifo_last_scale > 0.f)) {
+										dnf.reset(_angular_velocity(axis) / _fifo_last_scale);
+									}
+								}
+
+								_dynamic_notch_available = true;
+
+							} else {
+								// disable
+								dnf.setParameters(_filter_sample_rate_hz, 0, sensor_gyro_fft.resolution_hz);
+							}
+						}
+					}
+
+				} else {
+					// device id mismatch, disable all
+					for (auto &dnf : _dynamic_notch_filter) {
+						for (int axis = 0; axis < 3; axis++) {
+							dnf[axis].setParameters(_filter_sample_rate_hz, 0, sensor_gyro_fft.resolution_hz);
+						}
+					}
+
+					_dynamic_notch_available = false;
+				}
+			}
+		}
+
 		// process all outstanding fifo messages
 		sensor_gyro_fifo_s sensor_fifo_data;
 
@@ -330,6 +381,15 @@ void VehicleAngularVelocity::Run()
 
 					for (int n = 0; n < N; n++) {
 						data[n] = raw_data_array[axis][n];
+					}
+
+					// Apply dynamic notch filter from FFT
+					if (_dynamic_notch_available) {
+						for (auto &dnf : _dynamic_notch_filter) {
+							if (dnf[axis].getNotchFreq() > 0.f) {
+								dnf[axis].applyDF1(data, N);
+							}
+						}
 					}
 
 					// Apply general notch filter (IMU_GYRO_NF_FREQ)
